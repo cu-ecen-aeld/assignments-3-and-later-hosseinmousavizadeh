@@ -33,8 +33,10 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     cd linux-stable
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
-
     # TODO: Add your kernel build steps here
+    make mrproper
+    make defconfig
+    make all -j$(nproc)
 fi
 
 echo "Adding the Image in outdir"
@@ -48,6 +50,9 @@ then
 fi
 
 # TODO: Create necessary base directories
+mkdir ${OUTDIR}/rootfs
+cd ${OUTDIR}/rootfs
+mkdir -p bin lib lib64 proc sys usr/bin usr/lib usr/sbin var dev etc home sbin tmp var/log
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
@@ -56,25 +61,39 @@ git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
     # TODO:  Configure busybox
+    make distclean
+    make defconfig
 else
     cd busybox
 fi
-
 # TODO: Make and install busybox
+make
+make CONFIG_PREFIX=${OUTDIR}/rootfs install
 
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
-
+SYSROOT=$CROSS_COMPILE-gcc -print-sysroot
+cp SYSROOT/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
+cp SYSROOT/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
+cp SYSROOT/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+cp SYSROOT/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
 # TODO: Make device nodes
-
+mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
+mknod -m 666 ${OUTDIR}/rootfs/dev/console c 5 1
 # TODO: Clean and build the writer utility
-
+if [ -e ${OUTDIR}/writer ]; then
+    rm ${OUTDIR}/writer
+fi
+$CROSS_COMPILE-gcc writer.c -o ${OUTDIR}/rootfs/home/writer
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-
+cp finder.sh ${OUTDIR}/rootfs/home
+cp finder-test.sh ${OUTDIR}/rootfs/home
 # TODO: Chown the root directory
-
+chown -R root:root ${OUTDIR}/rootfs
 # TODO: Create initramfs.cpio.gz
+find ${OUTDIR}/rootfs | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
+gzip -f ${OUTDIR}/initramfs.cpiols
