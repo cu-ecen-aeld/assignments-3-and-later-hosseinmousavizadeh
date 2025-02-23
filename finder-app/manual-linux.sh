@@ -38,11 +38,10 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all -j$(nproc)
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules -j$(nproc)
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs -j$(nproc)
+    cp ${OUTDIR}/linux-stable/arch/arm64/boot/Image ${OUTDIR}
 fi
 
 echo "Adding the Image in outdir"
-mkdir ${OUTDIR}/Image
-cp ${OUTDIR}/linux-stable/arch/arm64/boot/Image.gz ${OUTDIR}/Image
 
 echo "Creating the staging directory for the root filesystem"
 cd "$OUTDIR"
@@ -93,9 +92,8 @@ fi
 ${CROSS_COMPILE}gcc ${FINDER_APP_DIR}/writer.c -o ${OUTDIR}/rootfs/home/writer
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp -r ${FINDER_APP_DIR}/conf ${OUTDIR}/rootfs/home
-cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home
-cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home
+cp -r ${FINDER_APP_DIR}/. ${OUTDIR}/rootfs/home/
+
 # TODO: Chown the root directory
 sudo chown -R root:root ${OUTDIR}/rootfs
 # TODO: Create initramfs.cpio.gz
