@@ -3,6 +3,9 @@ ifeq ($(CROSS_COMPILE), aarch64-none-linux-gnu-)
 	cc := aarch64-none-linux-gnu-gcc
 endif
 
+$(info CC is [$(CC)])
+$(info CROSS_COMPILE is [$(CROSS_COMPILE)])
+
 writer: writer.c
 	$(cc) writer.c -o writer
 clean:
