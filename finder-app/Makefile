@@ -7,7 +7,7 @@ $(info CC is [$(CC)])
 $(info CROSS_COMPILE is [$(CROSS_COMPILE)])
 
 writer: writer.c
-	$(cc) writer.c -o writer
+	$(CC) writer.c -o writer
 clean:
 	rm -f writer
 	rm -f *.o
