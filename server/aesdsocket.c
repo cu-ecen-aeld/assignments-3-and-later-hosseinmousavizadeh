@@ -14,17 +14,38 @@
 #include <stdlib.h>
 #include <signal.h>
 
-struct addrinfo *serverinfo;
-
+int signalReceived = 0;
+int inProgress = 0;
+int StreamSocket = -1;
 void handle_sigint(int sig) {
-    syslog(LOG_INFO, "Received SIGINT, exiting...");
-    closelog();
-    freeaddrinfo(serverinfo);
-    exit(0);
+    syslog(LOG_INFO, "Caught signal, exiting %d", inProgress);
+    signalReceived = 1;
+    if (inProgress == 0) {
+        syslog(LOG_INFO, "Exiting aesdsocket");
+        if(StreamSocket != -1) {
+            close(StreamSocket);
+        }
+        closelog();
+        if (unlink("/var/tmp/aesdsocketdata") == -1) {
+            syslog(LOG_ERR, "unlink unsuccessful");
+            closelog();
+            exit(1);
+        }
+        syslog(LOG_INFO, "Unlink successful");
+        exit(0);
+    }
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    int deamon = 0;
+    if(argc > 1) {
+        syslog(LOG_ERR, "Invalid number of arguments");
+        return -1;
+    }
+    if(strcmp(argv[1], "-d") || strcmp(argv[1], "--deamon")) {
+        deamon = 1;
+    }
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
     signal(SIGQUIT, handle_sigint);
@@ -39,6 +60,7 @@ int main()
     
     //Binding to the Port.
     int status;
+    struct addrinfo *serverinfo;
     struct addrinfo hints;
 
     memset(&hints, 0 , sizeof(hints));
@@ -60,7 +82,15 @@ int main()
         closelog();
         return -1;
     }
-
+    if(deamon) {
+        int pid = fork();
+        if (pid < 0) {
+            syslog(LOG_ERR, "fork failed");
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
+    }
     status = listen(StreamSocket, 1);
     if (status == -1) {
         syslog(LOG_ERR, "listen failed");
@@ -72,10 +102,10 @@ int main()
     
     struct sockaddr client;
     socklen_t clientSize = sizeof(client);
-    char buffer[150000];
+    char buffer[25000];
     memset(buffer, 0, sizeof(buffer));
     int bytesReceived = 0;
-    while(1) {
+    do {
         int dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (dataFile == -1) {
             syslog(LOG_ERR, "open failed");
@@ -90,7 +120,8 @@ int main()
             closelog();
             return -1;
         }
-        syslog(LOG_INFO, "Accepted connection from client: %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
+        inProgress = 1;
+        syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
     
         memset(buffer, 0, sizeof(buffer));
         status = recv(dataSocket, buffer, sizeof(buffer), 0);
@@ -102,7 +133,7 @@ int main()
             return -1;
         }
 
-        syslog(LOG_INFO, "Received data: %s", buffer);
+        //syslog(LOG_INFO, "Received data: %s", buffer);
         status = write(dataFile, buffer, strlen(buffer));
         if (status == -1) {
             syslog(LOG_ERR, "write failed");
@@ -150,7 +181,7 @@ int main()
             freeaddrinfo(serverinfo);
             return -1;
         }
-        syslog(LOG_INFO, "Read %ld bytes from file: %s", bytesRead, fileBuffer);
+        //syslog(LOG_INFO, "Read %ld bytes from file: %s", bytesRead, fileBuffer);
         int status = send(dataSocket, fileBuffer, bytesRead, 0);
         if (status == -1) {
             free(fileBuffer);
@@ -162,14 +193,30 @@ int main()
             freeaddrinfo(serverinfo);
             return -1;
         }
+        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         free(fileBuffer);
         close(readFile);
     
-    syslog(LOG_INFO, "Data written to file: /var/tmp/aesdsocketdata");
-    close(dataFile);
-    close(dataSocket);
-    syslog(LOG_INFO, "Connection closed");
-}
+        syslog(LOG_INFO, "Data written to file: /var/tmp/aesdsocketdata");
+        close(dataFile);
+        close(dataSocket);
+        syslog(LOG_INFO, "Connection closed");
+        inProgress = 0;
+    }while(!signalReceived);
+    status = close(StreamSocket);
+    if (status == -1) {
+        syslog(LOG_ERR, "close failed");
+        freeaddrinfo(serverinfo);
+        closelog();
+        return -1;
+    }
+    
+    if (unlink("/var/tmp/aesdsocketdata") == -1) {
+        syslog(LOG_ERR, "unlink unsuccessful");
+        closelog();
+        freeaddrinfo(serverinfo);
+        return 1;
+    }
     closelog();
     freeaddrinfo(serverinfo);
     return 0;
