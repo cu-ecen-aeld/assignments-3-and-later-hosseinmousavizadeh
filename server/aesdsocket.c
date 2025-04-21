@@ -11,10 +11,23 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <signal.h>
 
+struct addrinfo *serverinfo;
+
+void handle_sigint(int sig) {
+    syslog(LOG_INFO, "Received SIGINT, exiting...");
+    closelog();
+    freeaddrinfo(serverinfo);
+    exit(0);
+}
 
 int main()
 {
+    signal(SIGINT, handle_sigint);
+    signal(SIGTERM, handle_sigint);
+    signal(SIGQUIT, handle_sigint);
     openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "Starting aesdsocket");
     int StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
@@ -27,7 +40,6 @@ int main()
     //Binding to the Port.
     int status;
     struct addrinfo hints;
-    struct addrinfo *serverinfo;
 
     memset(&hints, 0 , sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -60,48 +72,104 @@ int main()
     
     struct sockaddr client;
     socklen_t clientSize = sizeof(client);
-    char buffer[1024];
+    char buffer[150000];
     memset(buffer, 0, sizeof(buffer));
     int bytesReceived = 0;
+    while(1) {
+        int dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (dataFile == -1) {
+            syslog(LOG_ERR, "open failed");
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
+        int dataSocket = accept(StreamSocket, &client, &clientSize);
+        if (dataSocket == -1) {
+            syslog(LOG_ERR, "accept failed");
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
+        syslog(LOG_INFO, "Accepted connection from client: %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
+    
+        memset(buffer, 0, sizeof(buffer));
+        status = recv(dataSocket, buffer, sizeof(buffer), 0);
+        if (status == -1) {
+            syslog(LOG_ERR, "recv failed");
+            close(dataSocket);
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
 
-    int dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
-    if (dataFile == -1) {
-        syslog(LOG_ERR, "open failed");
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    int dataSocket = accept(StreamSocket, &client, &clientSize);
-    if (dataSocket == -1) {
-        syslog(LOG_ERR, "accept failed");
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    status = recv(dataSocket, buffer, sizeof(buffer), 0);
-    if (status == -1) {
-        syslog(LOG_ERR, "recv failed");
-        close(dataSocket);
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    syslog(LOG_INFO, "Accepted connection from client: %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
-
-    syslog(LOG_INFO, "Received data: %s", buffer);
-    status = write(dataFile, buffer, strlen(buffer));
-    if (status == -1) {
-        syslog(LOG_ERR, "write failed");
-        close(dataSocket);
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
+        syslog(LOG_INFO, "Received data: %s", buffer);
+        status = write(dataFile, buffer, strlen(buffer));
+        if (status == -1) {
+            syslog(LOG_ERR, "write failed");
+            close(dataSocket);
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
+        int readFile = open("/var/tmp/aesdsocketdata", O_RDONLY);
+        if (readFile == -1) {
+            syslog(LOG_ERR, "open failed");
+            close(dataSocket);
+            freeaddrinfo(serverinfo);
+            closelog();
+            return -1;
+        }
+        struct stat st;
+        if (fstat(readFile, &st) == -1) {
+            close(readFile);
+            close(dataFile);
+            close(dataSocket);
+            syslog(LOG_ERR, "fstat failed");
+            closelog();
+            freeaddrinfo(serverinfo);
+            return 1;
+        }
+        char *fileBuffer = malloc(st.st_size);
+        if (fileBuffer == NULL) {
+            close(readFile);
+            close(dataFile);
+            close(dataSocket);
+            syslog(LOG_ERR, "malloc failed");
+            closelog();
+            freeaddrinfo(serverinfo);
+            return -1;
+        }
+        ssize_t bytesRead = read(readFile, fileBuffer, st.st_size);
+        if (bytesRead == -1) {
+            free(fileBuffer);
+            close(readFile);
+            close(dataFile);
+            close(dataSocket);
+            syslog(LOG_ERR, "read failed");
+            closelog();
+            freeaddrinfo(serverinfo);
+            return -1;
+        }
+        syslog(LOG_INFO, "Read %ld bytes from file: %s", bytesRead, fileBuffer);
+        int status = send(dataSocket, fileBuffer, bytesRead, 0);
+        if (status == -1) {
+            free(fileBuffer);
+            close(readFile);
+            close(dataFile);
+            close(dataSocket);
+            syslog(LOG_ERR, "send failed");
+            closelog();
+            freeaddrinfo(serverinfo);
+            return -1;
+        }
+        free(fileBuffer);
+        close(readFile);
+    
     syslog(LOG_INFO, "Data written to file: /var/tmp/aesdsocketdata");
     close(dataFile);
     close(dataSocket);
     syslog(LOG_INFO, "Connection closed");
-
+}
     closelog();
     freeaddrinfo(serverinfo);
     return 0;
