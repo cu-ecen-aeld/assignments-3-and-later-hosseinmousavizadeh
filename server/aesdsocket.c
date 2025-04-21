@@ -39,11 +39,11 @@ void handle_sigint(int sig) {
 int main(int argc, char *argv[])
 {
     int deamon = 0;
-    if(argc > 1) {
+    if(argc > 2) {
         syslog(LOG_ERR, "Invalid number of arguments");
         return -1;
     }
-    if(strcmp(argv[1], "-d") || strcmp(argv[1], "--deamon")) {
+    if(strcmp(argv[0], "-d") || strcmp(argv[1], "--deamon")) {
         deamon = 1;
     }
     signal(SIGINT, handle_sigint);
@@ -89,6 +89,12 @@ int main(int argc, char *argv[])
             freeaddrinfo(serverinfo);
             closelog();
             return -1;
+        }
+        if(pid > 0) {
+            syslog(LOG_INFO, "Daemon process created with PID: %d", pid);
+            freeaddrinfo(serverinfo);
+            closelog();
+            return 0;
         }
     }
     status = listen(StreamSocket, 1);
