@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
         syslog(LOG_ERR, "Invalid number of arguments");
         return -1;
     }
-    if(strcmp(argv[0], "-d") || strcmp(argv[1], "--deamon")) {
+    if (argc > 1 && ((!strcmp(argv[1], "-d")) || (!strcmp(argv[1], "--deamon")))) {
         deamon = 1;
     }
     signal(SIGINT, handle_sigint);
@@ -51,7 +51,7 @@ int main(int argc, char *argv[])
     signal(SIGQUIT, handle_sigint);
     openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "Starting aesdsocket");
-    int StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
+    StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
     if (StreamSocket == -1){
         syslog(LOG_ERR, "failed to create socket");
         return -1;
@@ -110,7 +110,7 @@ int main(int argc, char *argv[])
     socklen_t clientSize = sizeof(client);
     char buffer[25000];
     memset(buffer, 0, sizeof(buffer));
-    int bytesReceived = 0;
+    
     do {
         int dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (dataFile == -1) {
@@ -130,16 +130,26 @@ int main(int argc, char *argv[])
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
     
         memset(buffer, 0, sizeof(buffer));
-        status = recv(dataSocket, buffer, sizeof(buffer), 0);
-        if (status == -1) {
-            syslog(LOG_ERR, "recv failed");
-            close(dataSocket);
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
-        }
+        syslog(LOG_ERR, "start");
+        char end = 0;
+        int bytesReceived = 0;
+        do {
+            int bytesRead = recv(dataSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
 
-        //syslog(LOG_INFO, "Received data: %s", buffer);
+            if (bytesRead == -1) {
+                syslog(LOG_ERR, "recv failed");
+                close(dataSocket);
+                freeaddrinfo(serverinfo);
+                closelog();
+                return -1;
+            }
+            if (bytesRead == 0) {
+                break; // Connection closed
+            }
+            bytesReceived += bytesRead;
+            end = buffer[bytesReceived - 1];
+            
+        } while (end != 0x0A);
         status = write(dataFile, buffer, strlen(buffer));
         if (status == -1) {
             syslog(LOG_ERR, "write failed");
@@ -176,8 +186,8 @@ int main(int argc, char *argv[])
             freeaddrinfo(serverinfo);
             return -1;
         }
-        ssize_t bytesRead = read(readFile, fileBuffer, st.st_size);
-        if (bytesRead == -1) {
+        ssize_t lengthRead = read(readFile, fileBuffer, st.st_size);
+        if (lengthRead == -1) {
             free(fileBuffer);
             close(readFile);
             close(dataFile);
@@ -187,8 +197,7 @@ int main(int argc, char *argv[])
             freeaddrinfo(serverinfo);
             return -1;
         }
-        //syslog(LOG_INFO, "Read %ld bytes from file: %s", bytesRead, fileBuffer);
-        int status = send(dataSocket, fileBuffer, bytesRead, 0);
+        int status = send(dataSocket, fileBuffer, lengthRead, 0);
         if (status == -1) {
             free(fileBuffer);
             close(readFile);
@@ -199,14 +208,12 @@ int main(int argc, char *argv[])
             freeaddrinfo(serverinfo);
             return -1;
         }
-        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         free(fileBuffer);
         close(readFile);
-    
-        syslog(LOG_INFO, "Data written to file: /var/tmp/aesdsocketdata");
+        
         close(dataFile);
         close(dataSocket);
-        syslog(LOG_INFO, "Connection closed");
+        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         inProgress = 0;
     }while(!signalReceived);
     status = close(StreamSocket);
