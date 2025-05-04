@@ -28,10 +28,12 @@ void handle_sigint(int sig) {
         closelog();
         if (unlink("/var/tmp/aesdsocketdata") == -1) {
             syslog(LOG_ERR, "unlink unsuccessful");
+            close(StreamSocket);
             closelog();
             exit(1);
         }
         syslog(LOG_INFO, "Unlink successful");
+        close(StreamSocket);
         exit(0);
     }
 }
@@ -57,7 +59,12 @@ int main(int argc, char *argv[])
         return -1;
     }
     syslog(LOG_INFO, "Socket created successfully.");
-    
+    int optval = 1;
+    if (setsockopt(StreamSocket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
+        syslog(LOG_ERR, "setsockopt SO_REUSEADDR failed");
+        close(StreamSocket);
+        return -1;
+    }
     //Binding to the Port.
     int status;
     struct addrinfo *serverinfo;
@@ -216,7 +223,7 @@ int main(int argc, char *argv[])
         syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         inProgress = 0;
     }while(!signalReceived);
-    status = close(StreamSocket);
+    
     if (status == -1) {
         syslog(LOG_ERR, "close failed");
         freeaddrinfo(serverinfo);
