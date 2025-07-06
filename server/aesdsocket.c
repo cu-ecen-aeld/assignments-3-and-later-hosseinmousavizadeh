@@ -40,204 +40,220 @@ void handle_sigint(int sig) {
 
 int main(int argc, char *argv[])
 {
+    int status = 0;
     int deamon = 0;
-    if(argc > 2) {
-        syslog(LOG_ERR, "Invalid number of arguments");
-        return -1;
-    }
-    if (argc > 1 && ((!strcmp(argv[1], "-d")) || (!strcmp(argv[1], "--deamon")))) {
-        deamon = 1;
-    }
-    signal(SIGINT, handle_sigint);
-    signal(SIGTERM, handle_sigint);
-    signal(SIGQUIT, handle_sigint);
-    openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
-    syslog(LOG_INFO, "Starting aesdsocket");
-    StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
-    if (StreamSocket == -1){
-        syslog(LOG_ERR, "failed to create socket");
-        return -1;
-    }
-    syslog(LOG_INFO, "Socket created successfully.");
-    int optval = 1;
-    if (setsockopt(StreamSocket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
-        syslog(LOG_ERR, "setsockopt SO_REUSEADDR failed");
-        close(StreamSocket);
-        return -1;
-    }
-    //Binding to the Port.
-    int status;
     struct addrinfo *serverinfo;
     struct addrinfo hints;
-
-    memset(&hints, 0 , sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    status = getaddrinfo(NULL, "9000", &hints, &serverinfo);
-    if (status != 0){
-        syslog(LOG_ERR, "getaddrinfo failed");
-        closelog();
-        return -1;
-    }
-
-    status = bind(StreamSocket, serverinfo->ai_addr, serverinfo->ai_addrlen);
-    if (status == -1) {
-        syslog(LOG_ERR, "bind failed");
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    if(deamon) {
-        int pid = fork();
-        if (pid < 0) {
-            syslog(LOG_ERR, "fork failed");
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
-        }
-        if(pid > 0) {
-            syslog(LOG_INFO, "Daemon process created with PID: %d", pid);
-            freeaddrinfo(serverinfo);
-            closelog();
-            return 0;
-        }
-    }
-    status = listen(StreamSocket, 1);
-    if (status == -1) {
-        syslog(LOG_ERR, "listen failed");
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    syslog(LOG_INFO, "Listening on port 9000");
-    
     struct sockaddr client;
     socklen_t clientSize = sizeof(client);
     char buffer[25000];
-    memset(buffer, 0, sizeof(buffer));
-    
-    do {
-        int dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
-        if (dataFile == -1) {
-            syslog(LOG_ERR, "open failed");
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
-        }
-        int dataSocket = accept(StreamSocket, &client, &clientSize);
-        if (dataSocket == -1) {
-            syslog(LOG_ERR, "accept failed");
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
-        }
-        inProgress = 1;
-        syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
-    
-        memset(buffer, 0, sizeof(buffer));
-        syslog(LOG_ERR, "start");
-        char end = 0;
-        int bytesReceived = 0;
-        do {
-            int bytesRead = recv(dataSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
 
-            if (bytesRead == -1) {
-                syslog(LOG_ERR, "recv failed");
-                close(dataSocket);
+    if(argc > 2) {
+        syslog(LOG_ERR, "Invalid number of arguments");
+        status = -1;
+    }
+    if (!status) {
+        if (argc > 1 && ((!strcmp(argv[1], "-d")) || (!strcmp(argv[1], "--deamon")))) {
+            deamon = 1;
+        }
+        signal(SIGINT, handle_sigint);
+        signal(SIGTERM, handle_sigint);
+        signal(SIGQUIT, handle_sigint);
+        openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
+        syslog(LOG_INFO, "Starting aesdsocket");
+        StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
+        if (StreamSocket == -1) {
+            syslog(LOG_ERR, "failed to create socket");
+            status = -2;
+        }
+    }
+    if (!status) {
+        syslog(LOG_INFO, "Socket created successfully.");
+        int optval = 1;
+        if(setsockopt(StreamSocket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval))) {
+            syslog(LOG_ERR, "setsockopt SO_REUSEADDR failed");
+            status = -3;
+        }
+    }
+    if (!status) {
+        memset(&hints, 0 , sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE;
+
+        status = getaddrinfo(NULL, "9000", &hints, &serverinfo);
+        if (status != 0){
+            syslog(LOG_ERR, "getaddrinfo failed");
+            status = -4;
+        }
+    }
+    if (!status) {
+        if (bind(StreamSocket, serverinfo->ai_addr, serverinfo->ai_addrlen) == -1) {
+            syslog(LOG_ERR, "bind failed");
+            status = -5;
+        }
+    }
+    if (!status) {
+        if (deamon) {
+            int pid = fork();
+            if (pid < 0) {
+                syslog(LOG_ERR, "fork failed");
+                status = -6;
+            } else if (pid > 0) {
+                syslog(LOG_INFO, "Daemon process created with PID: %d", pid);
                 freeaddrinfo(serverinfo);
-                closelog();
-                return -1;
+                status = -7;
             }
-            if (bytesRead == 0) {
-                break; // Connection closed
-            }
-            bytesReceived += bytesRead;
-            end = buffer[bytesReceived - 1];
+        }
+    }
+    if (!status) {
+        if (listen(StreamSocket, 1) == -1) {
+            syslog(LOG_ERR, "listen failed");
+            status = -8;
+        } else {
+            syslog(LOG_INFO, "Listening on port 9000");
+        }
+    }
+    do {
+        int dataSocket = -1;
+        int dataFile = -1;
+        char *fileBuffer = NULL;
+        int readFile = -1;
+        ssize_t lengthRead = -1;
+        if (!status) {
+            dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
+            if (dataFile == -1) {
+                syslog(LOG_ERR, "open failed");
+                status = -9;
+            } else {
+                dataSocket = accept(StreamSocket, &client, &clientSize);
+                if (dataSocket == -1) {
+                    syslog(LOG_ERR, "accept failed");
+                    status = -10;
+                }
+                inProgress = 1;
+                syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
             
-        } while (end != 0x0A);
-        status = write(dataFile, buffer, strlen(buffer));
-        if (status == -1) {
-            syslog(LOG_ERR, "write failed");
-            close(dataSocket);
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
+                memset(buffer, 0, sizeof(buffer));
+                syslog(LOG_ERR, "start");
+            }
         }
-        int readFile = open("/var/tmp/aesdsocketdata", O_RDONLY);
-        if (readFile == -1) {
-            syslog(LOG_ERR, "open failed");
-            close(dataSocket);
-            freeaddrinfo(serverinfo);
-            closelog();
-            return -1;
+        if (!status) {
+            char end = 0;
+            int bytesReceived = 0;
+            char connection = 1;
+            do {
+                int bytesRead = recv(dataSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
+
+                if (bytesRead == -1) {
+                    syslog(LOG_ERR, "recv failed");
+                    status = -9;
+                }
+                if (bytesRead == 0) {
+                    connection = 0; // Connection closed
+                }
+                bytesReceived += bytesRead;
+                end = buffer[bytesReceived - 1];
+            } while ((end != 0x0A) && (!status) && (connection));
         }
-        struct stat st;
-        if (fstat(readFile, &st) == -1) {
-            close(readFile);
-            close(dataFile);
-            close(dataSocket);
-            syslog(LOG_ERR, "fstat failed");
-            closelog();
-            freeaddrinfo(serverinfo);
-            return 1;
+        if (!status) {
+            if (write(dataFile, buffer, strlen(buffer)) == -1) {
+                syslog(LOG_ERR, "write failed");
+                status = -10;
+            }
         }
-        char *fileBuffer = malloc(st.st_size);
-        if (fileBuffer == NULL) {
-            close(readFile);
-            close(dataFile);
-            close(dataSocket);
-            syslog(LOG_ERR, "malloc failed");
-            closelog();
-            freeaddrinfo(serverinfo);
-            return -1;
+        if (!status) {
+            readFile = open("/var/tmp/aesdsocketdata", O_RDONLY);
+            if (readFile == -1) {
+                syslog(LOG_ERR, "open failed");
+                status = -11;
+            } else {
+                struct stat st;
+                if (fstat(readFile, &st) == -1) {
+                    status = -12;
+                }
+                if (!status) {
+                    fileBuffer = malloc(st.st_size);
+                    if (fileBuffer == NULL) {
+                        status = -13;
+                    }
+                }
+                if (!status) {
+                    lengthRead = read(readFile, fileBuffer, st.st_size);
+                    if (lengthRead == -1) {
+                        status = -14;
+                    }
+                }
+            }
         }
-        ssize_t lengthRead = read(readFile, fileBuffer, st.st_size);
-        if (lengthRead == -1) {
+        if (!status) {
+            if (send(dataSocket, fileBuffer, lengthRead, 0) == -1) {
+                syslog(LOG_ERR, "send failed");
+                status = -15;
+            }
+        }
+        if(fileBuffer != NULL) {
             free(fileBuffer);
-            close(readFile);
-            close(dataFile);
-            close(dataSocket);
-            syslog(LOG_ERR, "read failed");
-            closelog();
-            freeaddrinfo(serverinfo);
-            return -1;
+            fileBuffer = NULL;
         }
-        int status = send(dataSocket, fileBuffer, lengthRead, 0);
-        if (status == -1) {
-            free(fileBuffer);
+        if (readFile != -1) {
             close(readFile);
-            close(dataFile);
-            close(dataSocket);
-            syslog(LOG_ERR, "send failed");
-            closelog();
-            freeaddrinfo(serverinfo);
-            return -1;
         }
-        free(fileBuffer);
-        close(readFile);
-        
-        close(dataFile);
-        close(dataSocket);
+        if (dataFile != -1) {
+            close(dataFile);
+        }
+        if (dataSocket != -1) {
+            close(dataSocket);
+        }
         syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         inProgress = 0;
-    }while(!signalReceived);
-    
-    if (status == -1) {
-        syslog(LOG_ERR, "close failed");
-        freeaddrinfo(serverinfo);
-        closelog();
-        return -1;
-    }
-    
+    }while((!signalReceived) && (!status));
     if (unlink("/var/tmp/aesdsocketdata") == -1) {
         syslog(LOG_ERR, "unlink unsuccessful");
+        status = -16;
+    } 
+    if (status == -2) {
+        syslog(LOG_ERR, "Failed to create socket");
+    } else if (status == -3) {
+        syslog(LOG_ERR, "setsockopt SO_REUSEADDR failed");
+    } else if (status == -4) {
+        syslog(LOG_ERR, "getaddrinfo failed");
+    } else if (status == -5) {
+        syslog(LOG_ERR, "bind failed");
+    } else if (status == -6) {
+        syslog(LOG_ERR, "fork failed");
+    } else if (status == -7) {
+        syslog(LOG_INFO, "Daemon process created successfully");
+    } else if (status == -8) {
+        syslog(LOG_ERR, "listen failed");
+    } else if (status == -9) {
+        syslog(LOG_ERR, "open or recv failed");
+    } else if (status == -10) {
+        syslog(LOG_ERR, "write or accept failed");
+    } else if (status == -11) {
+        syslog(LOG_ERR, "open for reading failed");
+    } else if (status == -12) {
+        syslog(LOG_ERR, "fstat failed");
+    } else if (status == -13) {
+        syslog(LOG_ERR, "malloc for file buffer failed");
+    } else if (status == -14) {
+        syslog(LOG_ERR, "read from file failed");
+    } else if (status == -15) {
+        syslog(LOG_ERR, "send failed");
+    } else if (status == -16) {
+        syslog(LOG_ERR, "unlink unsuccessful after closing connections");
+    } 
+    if ((status < -1) || (status == 0)) {
         closelog();
-        freeaddrinfo(serverinfo);
-        return 1;
     }
-    closelog();
-    freeaddrinfo(serverinfo);
-    return 0;
+    if ((status < -4) || (status == 0)) {
+        freeaddrinfo(serverinfo);
+    }
+    if (status) {
+        return 1;
+    } else {
+        return 0;
+    }
 }
+
+
