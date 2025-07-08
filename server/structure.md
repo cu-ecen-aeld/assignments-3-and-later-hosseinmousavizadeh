@@ -25,4 +25,4 @@
   * [x] Read the file completly
   * [x] send back the read data completly to the socket
 #
-* [ ] Close all
+* [x] Close all
