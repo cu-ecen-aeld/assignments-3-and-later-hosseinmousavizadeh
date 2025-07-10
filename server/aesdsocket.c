@@ -13,17 +13,23 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <pthread.h>
+
+#define MAX_SIMOULTANEOUS_CONNECTIONS 10
 
 int signalReceived = 0;
-int inProgress = 0;
+int inProgress = 0; //TODO: change the structure of this flag
 int StreamSocket = -1;
+pthread_mutex_t mutex;
+pthread_t connectionThread[MAX_SIMOULTANEOUS_CONNECTIONS];
+int threadCount = 0;
 
 void handle_sigint(int sig) 
 {
     syslog(LOG_INFO, "Caught signal, exiting %d", inProgress);
     int status = 0;
     signalReceived = 1;
-    if (inProgress == 0) {
+    if (threadCount == 0) {
         syslog(LOG_INFO, "Exiting aesdsocket");
         if(StreamSocket != -1) {
             close(StreamSocket);
@@ -39,32 +45,29 @@ void handle_sigint(int sig)
     }
 }
 
-int writeFunction (void) 
+void *connectionThreadFunction (void* arg) 
 {
-    int dataSocket = -1;
     int dataFile = -1;
     char *fileBuffer = NULL;
     int readFile = -1;
     ssize_t lengthRead = -1;
     int status = 0;
-    struct sockaddr client;
-    socklen_t clientSize = sizeof(client);
     char buffer[25000];
+    int* connectionSocket = NULL;
+
+    pthread_mutex_lock(&mutex);
+    if (arg == NULL) {
+        syslog(LOG_ERR, "Invalid argument passed to thread function");
+        status = -1;
+    }
+    connectionSocket = (int*)arg;
 
     if (!status) {
         dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (dataFile == -1) {
             syslog(LOG_ERR, "open failed");
             status = -9;
-        } else {
-            dataSocket = accept(StreamSocket, &client, &clientSize);
-            if (dataSocket == -1) {
-                syslog(LOG_ERR, "accept failed");
-                status = -10;
-            }
-            inProgress = 1;
-            syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
-        
+        } else {       
             memset(buffer, 0, sizeof(buffer));
             syslog(LOG_ERR, "start");
         }
@@ -74,7 +77,8 @@ int writeFunction (void)
         int bytesReceived = 0;
         char connection = 1;
         do {
-            int bytesRead = recv(dataSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
+            syslog(LOG_WARNING, "In thread: Thread count: %d, socket handler: %d", threadCount, *connectionSocket);
+            int bytesRead = recv(*connectionSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
 
             if (bytesRead == -1) {
                 syslog(LOG_ERR, "recv failed");
@@ -118,7 +122,7 @@ int writeFunction (void)
         }
     }
     if (!status) {
-        if (send(dataSocket, fileBuffer, lengthRead, 0) == -1) {
+        if (send(*connectionSocket, fileBuffer, lengthRead, 0) == -1) {
             syslog(LOG_ERR, "send failed");
             status = -15;
         }
@@ -135,18 +139,16 @@ int writeFunction (void)
         close(dataFile);
         dataFile = -1;
     }
-    if (dataSocket != -1) {
-        close(dataSocket);
-        dataSocket = -1;
+    threadCount--;
+    if (*connectionSocket != -1) {
+        close(*connectionSocket);
+        *connectionSocket = -1;
     }
-    syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
-    inProgress = 0;
+    pthread_mutex_unlock(&mutex);
     if (status) {
         syslog(LOG_ERR, "Error occurred: %d", status);
-        return status;
-    } else {
-        return 0;
     }
+    return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -155,6 +157,9 @@ int main(int argc, char *argv[])
     int deamon = 0;
     struct addrinfo *serverinfo;
     struct addrinfo hints;
+    struct sockaddr client;
+    socklen_t clientSize = sizeof(client);
+    int socketConnection = -1;
 
     if(argc > 2) {
         syslog(LOG_ERR, "Invalid number of arguments");
@@ -221,8 +226,31 @@ int main(int argc, char *argv[])
             syslog(LOG_INFO, "Listening on port 9000");
         }
     }
+    if (pthread_mutex_init(&mutex, NULL)) {
+        syslog(LOG_ERR, "Mutex initialization failed");
+        status = -9;
+    }
     while ((!signalReceived) && (!status)) {
-        status = writeFunction();
+        socketConnection = accept(StreamSocket, &client, &clientSize);
+        if (socketConnection == -1) {
+            syslog(LOG_ERR, "accept failed");
+            status = -10;
+        } else {
+            syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
+            syslog(LOG_WARNING, "Thread count: %d, socket handler: %d", threadCount, socketConnection);
+            if (pthread_create(&connectionThread[threadCount], NULL, connectionThreadFunction, &socketConnection) != 0) {
+                syslog(LOG_ERR, "pthread_create failed");
+                status = -10;
+            } else {
+                syslog(LOG_INFO, "Connection thread %d created", threadCount);
+                threadCount++;
+                if (threadCount >= MAX_SIMOULTANEOUS_CONNECTIONS) {
+                    syslog(LOG_ERR, "Maximum simultaneous connections reached");
+                    status = -11;
+                }
+            }
+            syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
+        }
     }
     if (unlink("/var/tmp/aesdsocketdata") == -1) {
         syslog(LOG_ERR, "unlink unsuccessful");
@@ -240,5 +268,3 @@ int main(int argc, char *argv[])
         return 0;
     }
 }
-
-
