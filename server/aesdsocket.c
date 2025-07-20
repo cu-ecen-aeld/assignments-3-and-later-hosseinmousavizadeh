@@ -14,35 +14,42 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <pthread.h>
+#include <sys/queue.h>
+#include <stdbool.h>
 
-#define MAX_SIMOULTANEOUS_CONNECTIONS 10
+struct connectionData_s {
+    int socketHandler;
+    pthread_t threadId;
+    bool finished;
+    LIST_ENTRY(connectionData_s) entries;
+};
+
+typedef struct connectionData_s connectionData_t;
+
+LIST_HEAD(connectionList_t, connectionData_s);
 
 int signalReceived = 0;
-int inProgress = 0; //TODO: change the structure of this flag
 int StreamSocket = -1;
 pthread_mutex_t mutex;
-pthread_t connectionThread[MAX_SIMOULTANEOUS_CONNECTIONS];
 int threadCount = 0;
 
 void handle_sigint(int sig) 
 {
-    syslog(LOG_INFO, "Caught signal, exiting %d", inProgress);
+    syslog(LOG_INFO, "Caught signal, exiting");
     int status = 0;
     signalReceived = 1;
-    if (threadCount == 0) {
-        syslog(LOG_INFO, "Exiting aesdsocket");
-        if(StreamSocket != -1) {
-            close(StreamSocket);
-        }
-        if (unlink("/var/tmp/aesdsocketdata") == -1) {
-            syslog(LOG_ERR, "unlink unsuccessful");
-            status = 1;
-        } else {
-            syslog(LOG_INFO, "Unlink successful");
-        }
-        closelog();
-        exit(status);
+    syslog(LOG_INFO, "Exiting aesdsocket");
+    if(StreamSocket != -1) {
+        close(StreamSocket);
     }
+    if (unlink("/var/tmp/aesdsocketdata") == -1) {
+        syslog(LOG_ERR, "unlink unsuccessful");
+        status = 1;
+    } else {
+        syslog(LOG_INFO, "Unlink successful");
+    }
+    closelog();
+    exit(status);
 }
 
 void *connectionThreadFunction (void* arg) 
@@ -53,14 +60,12 @@ void *connectionThreadFunction (void* arg)
     ssize_t lengthRead = -1;
     int status = 0;
     char buffer[25000];
-    int* connectionSocket = NULL;
 
-    pthread_mutex_lock(&mutex);
     if (arg == NULL) {
         syslog(LOG_ERR, "Invalid argument passed to thread function");
         status = -1;
     }
-    connectionSocket = (int*)arg;
+    connectionData_t* ConnectionData = (connectionData_t*)arg;
 
     if (!status) {
         dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
@@ -77,8 +82,8 @@ void *connectionThreadFunction (void* arg)
         int bytesReceived = 0;
         char connection = 1;
         do {
-            syslog(LOG_WARNING, "In thread: Thread count: %d, socket handler: %d", threadCount, *connectionSocket);
-            int bytesRead = recv(*connectionSocket, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
+            syslog(LOG_WARNING, "In thread: Thread ID: %ld, Thread count: %d, socket handler: %d, address: %p", ConnectionData->threadId, threadCount, ConnectionData->socketHandler, (void *)ConnectionData);
+            int bytesRead = recv(ConnectionData->socketHandler, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
 
             if (bytesRead == -1) {
                 syslog(LOG_ERR, "recv failed");
@@ -89,13 +94,15 @@ void *connectionThreadFunction (void* arg)
             }
             bytesReceived += bytesRead;
             end = buffer[bytesReceived - 1];
-        } while ((end != 0x0A) && (!status) && (connection));
+        } while ((end != 0x0A) && (!status) && (connection) && (!signalReceived) );
     }
     if (!status) {
+        pthread_mutex_lock(&mutex);
         if (write(dataFile, buffer, strlen(buffer)) == -1) {
             syslog(LOG_ERR, "write failed");
             status = -10;
         }
+        pthread_mutex_unlock(&mutex);
     }
     if (!status) {
         readFile = open("/var/tmp/aesdsocketdata", O_RDONLY);
@@ -122,7 +129,7 @@ void *connectionThreadFunction (void* arg)
         }
     }
     if (!status) {
-        if (send(*connectionSocket, fileBuffer, lengthRead, 0) == -1) {
+        if (send(ConnectionData->socketHandler, fileBuffer, lengthRead, 0) == -1) {
             syslog(LOG_ERR, "send failed");
             status = -15;
         }
@@ -139,12 +146,11 @@ void *connectionThreadFunction (void* arg)
         close(dataFile);
         dataFile = -1;
     }
-    threadCount--;
-    if (*connectionSocket != -1) {
-        close(*connectionSocket);
-        *connectionSocket = -1;
+    if (ConnectionData->socketHandler != -1) {
+        close(ConnectionData->socketHandler);
+        ConnectionData->socketHandler = -1;
     }
-    pthread_mutex_unlock(&mutex);
+    ConnectionData->finished = true;
     if (status) {
         syslog(LOG_ERR, "Error occurred: %d", status);
     }
@@ -230,32 +236,54 @@ int main(int argc, char *argv[])
         syslog(LOG_ERR, "Mutex initialization failed");
         status = -9;
     }
+    struct connectionList_t connectionList;
+    LIST_INIT(&connectionList);
     while ((!signalReceived) && (!status)) {
+        syslog(LOG_WARNING, "Waiting for connection...");
         socketConnection = accept(StreamSocket, &client, &clientSize);
         if (socketConnection == -1) {
             syslog(LOG_ERR, "accept failed");
             status = -10;
         } else {
             syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
-            syslog(LOG_WARNING, "Thread count: %d, socket handler: %d", threadCount, socketConnection);
-            if (pthread_create(&connectionThread[threadCount], NULL, connectionThreadFunction, &socketConnection) != 0) {
-                syslog(LOG_ERR, "pthread_create failed");
-                status = -10;
+            connectionData_t *newConnection = malloc(sizeof(connectionData_t));
+            if (newConnection == NULL) {
+                syslog(LOG_ERR, "Memory allocation for new connection failed");
+                status = -11;
             } else {
-                syslog(LOG_INFO, "Connection thread %d created", threadCount);
-                threadCount++;
-                if (threadCount >= MAX_SIMOULTANEOUS_CONNECTIONS) {
-                    syslog(LOG_ERR, "Maximum simultaneous connections reached");
-                    status = -11;
+                newConnection->socketHandler = socketConnection;
+                newConnection->finished = false;
+                syslog(LOG_WARNING, "Thread count: %d, socket handler: %d, address: %p", threadCount, newConnection->socketHandler, (void *)newConnection);
+                if (pthread_create(&newConnection->threadId, NULL, connectionThreadFunction, newConnection) != 0) {
+                    syslog(LOG_ERR, "pthread_create failed");
+                    free(newConnection);
+                    status = -12;
+                } else {
+                    LIST_INSERT_HEAD(&connectionList, newConnection, entries);
+                    threadCount++;
                 }
             }
-            syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
         }
+        struct connectionData_s *Connection;
+        LIST_FOREACH(Connection, &connectionList, entries) {
+            syslog(LOG_INFO, "LIST_FOREACH: Thread ID: %ld, Socket Handler: %d", Connection->threadId, Connection->socketHandler);
+            if (Connection->finished) {
+                syslog(LOG_INFO, "Thread finished: %ld", Connection->threadId);
+                LIST_REMOVE(Connection, entries);
+                pthread_join(Connection->threadId, NULL);
+                free(Connection);
+                threadCount--;
+                syslog(LOG_INFO, "Thread count after join: %d", threadCount);
+            }
+            syslog(LOG_WARNING, "IN");
+        }
+        syslog(LOG_WARNING, "OUT");
     }
+    syslog(LOG_WARNING, "Exiting aesdsocket");
     if (unlink("/var/tmp/aesdsocketdata") == -1) {
         syslog(LOG_ERR, "unlink unsuccessful");
         status = -16;
-    } 
+    }
     if ((status < -1) || (status == 0)) {
         closelog();
     }
