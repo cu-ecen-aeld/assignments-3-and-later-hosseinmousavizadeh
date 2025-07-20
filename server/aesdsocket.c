@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <sys/queue.h>
 #include <stdbool.h>
+#include <time.h>
 
 struct connectionData_s {
     int socketHandler;
@@ -42,14 +43,7 @@ void handle_sigint(int sig)
     if(StreamSocket != -1) {
         close(StreamSocket);
     }
-    if (unlink("/var/tmp/aesdsocketdata") == -1) {
-        syslog(LOG_ERR, "unlink unsuccessful");
-        status = 1;
-    } else {
-        syslog(LOG_INFO, "Unlink successful");
-    }
-    closelog();
-    exit(status);
+    //exit(status);
 }
 
 void *connectionThreadFunction (void* arg) 
@@ -74,7 +68,6 @@ void *connectionThreadFunction (void* arg)
             status = -9;
         } else {       
             memset(buffer, 0, sizeof(buffer));
-            syslog(LOG_ERR, "start");
         }
     }
     if (!status) {
@@ -82,7 +75,6 @@ void *connectionThreadFunction (void* arg)
         int bytesReceived = 0;
         char connection = 1;
         do {
-            syslog(LOG_WARNING, "In thread: Thread ID: %ld, Thread count: %d, socket handler: %d, address: %p", ConnectionData->threadId, threadCount, ConnectionData->socketHandler, (void *)ConnectionData);
             int bytesRead = recv(ConnectionData->socketHandler, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
 
             if (bytesRead == -1) {
@@ -239,7 +231,7 @@ int main(int argc, char *argv[])
     struct connectionList_t connectionList;
     LIST_INIT(&connectionList);
     while ((!signalReceived) && (!status)) {
-        syslog(LOG_WARNING, "Waiting for connection...");
+        syslog(LOG_INFO, "Waiting for connection...");
         socketConnection = accept(StreamSocket, &client, &clientSize);
         if (socketConnection == -1) {
             syslog(LOG_ERR, "accept failed");
@@ -253,7 +245,6 @@ int main(int argc, char *argv[])
             } else {
                 newConnection->socketHandler = socketConnection;
                 newConnection->finished = false;
-                syslog(LOG_WARNING, "Thread count: %d, socket handler: %d, address: %p", threadCount, newConnection->socketHandler, (void *)newConnection);
                 if (pthread_create(&newConnection->threadId, NULL, connectionThreadFunction, newConnection) != 0) {
                     syslog(LOG_ERR, "pthread_create failed");
                     free(newConnection);
@@ -266,20 +257,16 @@ int main(int argc, char *argv[])
         }
         struct connectionData_s *Connection;
         LIST_FOREACH(Connection, &connectionList, entries) {
-            syslog(LOG_INFO, "LIST_FOREACH: Thread ID: %ld, Socket Handler: %d", Connection->threadId, Connection->socketHandler);
             if (Connection->finished) {
-                syslog(LOG_INFO, "Thread finished: %ld", Connection->threadId);
                 LIST_REMOVE(Connection, entries);
                 pthread_join(Connection->threadId, NULL);
                 free(Connection);
                 threadCount--;
                 syslog(LOG_INFO, "Thread count after join: %d", threadCount);
             }
-            syslog(LOG_WARNING, "IN");
         }
-        syslog(LOG_WARNING, "OUT");
     }
-    syslog(LOG_WARNING, "Exiting aesdsocket");
+    syslog(LOG_INFO, "Exiting aesdsocket");
     if (unlink("/var/tmp/aesdsocketdata") == -1) {
         syslog(LOG_ERR, "unlink unsuccessful");
         status = -16;
