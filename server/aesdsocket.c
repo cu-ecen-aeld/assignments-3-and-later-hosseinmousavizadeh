@@ -51,6 +51,8 @@ void *timeStampThreadFunction(void *arg)
     int status = 0;
     char buffer[64];
     int dataFile = -1;
+    time_t nextTimeLog = 0;
+    struct timespec ts = {0};
 
     if (!status) {
         dataFile = open(FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0644);
@@ -62,17 +64,21 @@ void *timeStampThreadFunction(void *arg)
         }
     }
     while ((!signalReceived) && (!status)) {
-        sleep(10);
         time_t now = time(NULL);
-        struct tm *tm_info = localtime(&now);
-        strftime(buffer, sizeof(buffer), "timestamp:%a, %d %b %Y %H:%M:%S\n", tm_info);
-        syslog(LOG_INFO, "Writing current time: %s", buffer);
-        pthread_mutex_lock(&mutex);
-        if (write(dataFile, buffer, strlen(buffer)) == -1) {
-            syslog(LOG_ERR, "write timestamp failed");
-            status = -10;
+        if (now >= nextTimeLog) {
+            struct tm *tm_info = localtime(&now);
+            strftime(buffer, sizeof(buffer), "timestamp:%a, %d %b %Y %H:%M:%S\n", tm_info);
+            syslog(LOG_INFO, "Writing current time: %s", buffer);
+            pthread_mutex_lock(&mutex);
+            if (write(dataFile, buffer, strlen(buffer)) == -1) {
+                syslog(LOG_ERR, "write timestamp failed");
+                status = -10;
+            }
+            pthread_mutex_unlock(&mutex);
+            nextTimeLog = now + 10;
         }
-        pthread_mutex_unlock(&mutex);
+        ts.tv_nsec = 1000;
+        nanosleep(&ts, NULL);
     }
     if (dataFile != -1) {
         close(dataFile);
@@ -298,15 +304,17 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        struct connectionData_s *Connection;
-        LIST_FOREACH(Connection, &connectionList, entries) {
-            if (Connection->finished) {
-                LIST_REMOVE(Connection, entries);
-                pthread_join(Connection->threadId, NULL);
-                free(Connection);
+        connectionData_t *connection = LIST_FIRST(&connectionList);
+        while (connection != NULL) {
+            connectionData_t* next = LIST_NEXT(connection, entries);
+            if (connection->finished) {
+                pthread_join(connection->threadId, NULL);
                 threadCount--;
+                LIST_REMOVE(connection, entries);
+                free(connection);
                 syslog(LOG_INFO, "Thread count after join: %d", threadCount);
             }
+            connection = next;
         }
     }
     syslog(LOG_INFO, "Exiting aesdsocket");
