@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <time.h>
 
+#define FILE_PATH "/var/tmp/aesdsocketdata"
 struct connectionData_s {
     int socketHandler;
     pthread_t threadId;
@@ -43,7 +44,41 @@ void handle_sigint(int sig)
     if(StreamSocket != -1) {
         close(StreamSocket);
     }
-    //exit(status);
+}
+
+void *timeStampThreadFunction(void *arg) 
+{
+    int status = 0;
+    char buffer[64];
+    int dataFile = -1;
+
+    if (!status) {
+        dataFile = open(FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (dataFile == -1) {
+            syslog(LOG_ERR, "open failed");
+            status = -9;
+        } else {       
+            memset(buffer, 0, sizeof(buffer));
+        }
+    }
+    while ((!signalReceived) && (!status)) {
+        sleep(10);
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        strftime(buffer, sizeof(buffer), "timestamp:%a, %d %b %Y %H:%M:%S\n", tm_info);
+        syslog(LOG_INFO, "Writing current time: %s", buffer);
+        pthread_mutex_lock(&mutex);
+        if (write(dataFile, buffer, strlen(buffer)) == -1) {
+            syslog(LOG_ERR, "write timestamp failed");
+            status = -10;
+        }
+        pthread_mutex_unlock(&mutex);
+    }
+    if (dataFile != -1) {
+        close(dataFile);
+        dataFile = -1;
+    }
+    return NULL;
 }
 
 void *connectionThreadFunction (void* arg) 
@@ -62,7 +97,7 @@ void *connectionThreadFunction (void* arg)
     connectionData_t* ConnectionData = (connectionData_t*)arg;
 
     if (!status) {
-        dataFile = open("/var/tmp/aesdsocketdata", O_WRONLY | O_APPEND | O_CREAT, 0644);
+        dataFile = open(FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (dataFile == -1) {
             syslog(LOG_ERR, "open failed");
             status = -9;
@@ -97,7 +132,7 @@ void *connectionThreadFunction (void* arg)
         pthread_mutex_unlock(&mutex);
     }
     if (!status) {
-        readFile = open("/var/tmp/aesdsocketdata", O_RDONLY);
+        readFile = open(FILE_PATH, O_RDONLY);
         if (readFile == -1) {
             syslog(LOG_ERR, "open failed");
             status = -11;
@@ -158,6 +193,7 @@ int main(int argc, char *argv[])
     struct sockaddr client;
     socklen_t clientSize = sizeof(client);
     int socketConnection = -1;
+    pthread_t timeStampThread = -1;
 
     if(argc > 2) {
         syslog(LOG_ERR, "Invalid number of arguments");
@@ -216,6 +252,13 @@ int main(int argc, char *argv[])
             }
         }
     }
+    //Set up the timeStamp thread
+    if (!status) {
+        if (pthread_create(&timeStampThread, NULL, timeStampThreadFunction, NULL) != 0) {
+            syslog(LOG_ERR, "pthread_create failed");
+            status = -12;
+        }
+    }
     if (!status) {
         if (listen(StreamSocket, 1) == -1) {
             syslog(LOG_ERR, "listen failed");
@@ -267,7 +310,10 @@ int main(int argc, char *argv[])
         }
     }
     syslog(LOG_INFO, "Exiting aesdsocket");
-    if (unlink("/var/tmp/aesdsocketdata") == -1) {
+    if (timeStampThread != -1) {
+        pthread_join(timeStampThread, NULL);
+    }
+    if (unlink(FILE_PATH) == -1) {
         syslog(LOG_ERR, "unlink unsuccessful");
         status = -16;
     }
