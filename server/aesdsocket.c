@@ -17,6 +17,7 @@
 #include <sys/queue.h>
 #include <stdbool.h>
 #include <time.h>
+#include <errno.h>
 
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 struct connectionData_s {
@@ -41,8 +42,12 @@ void handle_sigint(int sig)
     int status = 0;
     signalReceived = 1;
     syslog(LOG_INFO, "Exiting aesdsocket");
-    if(StreamSocket != -1) {
-        close(StreamSocket);
+    if (StreamSocket != -1) {
+        shutdown(StreamSocket, SHUT_RDWR);
+        if (close(StreamSocket) == -1) {
+            syslog(LOG_ERR, "Error in closing the Stream socket.");
+        }
+        syslog(LOG_INFO, "Closed the streaming socket");
     }
 }
 
@@ -101,7 +106,6 @@ void *connectionThreadFunction (void* arg)
         status = -1;
     }
     connectionData_t* ConnectionData = (connectionData_t*)arg;
-
     if (!status) {
         dataFile = open(FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (dataFile == -1) {
@@ -117,7 +121,6 @@ void *connectionThreadFunction (void* arg)
         char connection = 1;
         do {
             int bytesRead = recv(ConnectionData->socketHandler, buffer + bytesReceived, sizeof(buffer) - bytesReceived, 0);
-
             if (bytesRead == -1) {
                 syslog(LOG_ERR, "recv failed");
                 status = -9;
@@ -209,15 +212,31 @@ int main(int argc, char *argv[])
         if (argc > 1 && ((!strcmp(argv[1], "-d")) || (!strcmp(argv[1], "--deamon")))) {
             deamon = 1;
         }
-        signal(SIGINT, handle_sigint);
-        signal(SIGTERM, handle_sigint);
-        signal(SIGQUIT, handle_sigint);
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = handle_sigint;
+        // Do NOT set SA_RESTART, so accept() is interrupted
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGQUIT, &sa, NULL);
         openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
         syslog(LOG_INFO, "Starting aesdsocket");
         StreamSocket = socket(PF_INET, SOCK_STREAM, 0);
         if (StreamSocket == -1) {
             syslog(LOG_ERR, "failed to create socket");
             status = -2;
+        }
+    }
+    if (!status) {
+        if (deamon) {
+            int pid = fork();
+            if (pid < 0) {
+                syslog(LOG_ERR, "fork failed");
+                status = -6;
+            } else if (pid > 0) {
+                syslog(LOG_INFO, "Daemon process created with PID: %d", pid);
+                status = 2;
+            }
         }
     }
     if (!status) {
@@ -235,7 +254,7 @@ int main(int argc, char *argv[])
         hints.ai_flags = AI_PASSIVE;
 
         status = getaddrinfo(NULL, "9000", &hints, &serverinfo);
-        if (status != 0){
+        if (status != 0) {
             syslog(LOG_ERR, "getaddrinfo failed");
             status = -4;
         }
@@ -244,18 +263,6 @@ int main(int argc, char *argv[])
         if (bind(StreamSocket, serverinfo->ai_addr, serverinfo->ai_addrlen) == -1) {
             syslog(LOG_ERR, "bind failed");
             status = -5;
-        }
-    }
-    if (!status) {
-        if (deamon) {
-            int pid = fork();
-            if (pid < 0) {
-                syslog(LOG_ERR, "fork failed");
-                status = -6;
-            } else if (pid > 0) {
-                syslog(LOG_INFO, "Daemon process created with PID: %d", pid);
-                status = 1;
-            }
         }
     }
     //Set up the timeStamp thread
@@ -283,8 +290,8 @@ int main(int argc, char *argv[])
         syslog(LOG_INFO, "Waiting for connection...");
         socketConnection = accept(StreamSocket, &client, &clientSize);
         if (socketConnection == -1) {
-            syslog(LOG_ERR, "accept failed");
-            status = -10;
+            syslog(LOG_WARNING, "accept failed");
+            status = 1;
         } else {
             syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(((struct sockaddr_in *)&client)->sin_addr));
             connectionData_t *newConnection = malloc(sizeof(connectionData_t));
@@ -317,21 +324,23 @@ int main(int argc, char *argv[])
             connection = next;
         }
     }
-    syslog(LOG_INFO, "Exiting aesdsocket");
+    syslog(LOG_INFO, "Exiting aesdsocket, status: %d", status);
     if (timeStampThread != -1) {
         pthread_join(timeStampThread, NULL);
     }
-    if (unlink(FILE_PATH) == -1) {
-        syslog(LOG_ERR, "unlink unsuccessful");
-        status = -16;
+    if (status != 2) {
+        if (unlink(FILE_PATH) == -1) {
+            syslog(LOG_ERR, "unlink unsuccessful");
+            status = -16;
+        }
     }
-    if ((status < -1) || (status == 0)) {
+    if ((status < -1) || (status >= 0)) {
         closelog();
     }
-    if ((status < -4) || (status == 0)) {
+    if ((status < -4) || (status >= 0 && status <= 1)) {
         freeaddrinfo(serverinfo);
     }
-    if (status) {
+    if (status < 0) {
         return 1;
     } else {
         return 0;
